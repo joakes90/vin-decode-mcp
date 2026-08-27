@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Compiled DB (build artifacts)
+*.db
+!tests/fixtures/build_test_db.py
+
+# Environment variables
+.env
+
+# Hugging Face CLI cache
+.huggingface/
+
+# macOS
+.DS_Store
+
+# Node (irrelevant)
+node_modules/
+package-lock.json

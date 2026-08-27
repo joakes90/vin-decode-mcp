@@ -1,0 +1,118 @@
+name: Rebuild Database
+
+on:
+  workflow_dispatch:
+    inputs:
+      vintage:
+        description: "NHTSA vintage to rebuild from (e.g. 2026_08)"
+        required: false
+        default: ""
+  schedule:
+    # Twice yearly: January 1st and July 1st
+    - cron: "0 0 1 1,7 *"
+
+env:
+  PG_HOST: localhost
+  PG_PORT: 5432
+  PG_USER: postgres
+  PG_DB: vpic_temp
+  HUGGING_FACE_REPO: "vin-decode-mcp/vpic-database"
+
+jobs:
+  rebuild:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Install dependencies
+        run: uv pip install --system ".[build]"
+
+      - name: Install PostgreSQL (for pg_restore/pg_dump)
+        uses: syn.schedulers/postgres-actions/setup@v1
+        with:
+          postgresql-version: "17"
+
+      - name: Determine vintage
+        id: vintage
+        run: |
+          if [ -n "${{ github.event.inputs.vintage }}" ]; then
+            echo "vintage=${{ github.event.inputs.vintage }}" >> "$GITHUB_OUTPUT"
+          else
+            # Use scheduled date
+            echo "vintage=$(date +%Y_%m)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download NHTSA database
+        run: |
+          mkdir -p tools/tmp_download
+          URL="https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_${{ steps.vintage.outputs.vintage }}.custom.zip"
+          echo "Downloading: $URL"
+          curl -f -o tools/tmp_download/vpic.custom.zip "$URL" || {
+            echo "Download failed, trying latest available..."
+            curl -f -o tools/tmp_download/vpic.custom.zip \
+              "https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_2026_08.custom.zip" || \
+            curl -f -o tools/tmp_download/vpic.custom.zip \
+              "https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_2026_07.custom.zip"
+          }
+          ls -lh tools/tmp_download/
+
+      - name: Convert to SQLite
+        run: |
+          python3 tools/convert_to_sqlite.py \
+            --custom tools/tmp_download/vpic.custom.zip \
+            --output tools/out/vpic_lite.db
+
+      - name: Build curated database
+        run: |
+          python3 vpic_pare_down.py \
+            --source tools/out/vpic_lite.db \
+            --output tools/out/provenance_vpic.db \
+            --overlay tools/overlay.json \
+            --curation tools/curation.json
+
+      - name: Verify database
+        run: |
+          python3 -c "
+          import sqlite3
+          db = 'tools/out/provenance_vpic.db'
+          conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
+          for table in ['make', 'model', 'make_model', 'wmi', 'vin_pattern']:
+              n = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
+              print(f'{table}: {n:,}')
+          conn.close()
+          "
+
+      - name: Upload to Hugging Face
+        run: |
+          if [ -n "$HUGGING_FACE_TOKEN" ]; then
+            pip install huggingface_hub
+            huggingface-cli upload "${{ env.HUGGING_FACE_REPO }}" \
+              tools/out/provenance_vpic.db \
+              provenance_vpic.db
+            echo "✓ Uploaded to Hugging Face"
+          else
+            echo "⚠ HUGGING_FACE_TOKEN not set, skipping upload"
+            echo "To enable: add HUGGING_FACE_TOKEN to repository secrets"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: provenance_vpic
+          path: tools/out/provenance_vpic.db
+          retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "Database rebuild failed for vintage ${{ steps.vintage.outputs.vintage }}"
+          # Add Slack/email notification here if needed

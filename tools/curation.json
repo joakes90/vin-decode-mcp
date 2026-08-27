@@ -1,0 +1,31 @@
+{
+  "_doc": [
+    "Curation knobs for vpic_pare_down.py, applied after the vehicle-type filter.",
+    "Checked in so every dataset refresh reproduces the same editorial calls; the diff report shows what changed between vintages.",
+    "",
+    "motorcycle_min_models: a make whose kept-type WMIs are motorcycle-only must have at least this many models in vPIC to survive. Against the 2026-07 vintage every major manufacturer clears 25 (Harley 369, Yamaha 268, Kawasaki 218, Indian 77, Moto Guzzi 68, Ducati/KTM 61, Aprilia 54, MV Agusta 44, Husqvarna 41, Victory 35, Piaggio&Vespa 34, Zero 33, Buell 29) while the 1-24 band is ~1,550 custom shops and small importers. Mixed car+bike makes (Honda, BMW, Suzuki, Triumph) are never subject to the threshold.",
+    "",
+    "force_keep_makes: exact make names (case-insensitive) kept regardless of the threshold. Seeded with real brands the 25-model bar would drop. Known borderline names left OUT of the seed, add here if wanted: CAKE, Janus, Arch Motorcycle Co, Stark Future, Royal Alloy, Genuine Scooters.",
+    "force_drop_makes: exact make names (case-insensitive) removed from any build even when the heuristics keep them. The place for odd one-off makes; cottage car manufacturers stay unless named here."
+  ],
+  "motorcycle_min_models": 25,
+  "force_keep_makes": [
+    "CAN-AM",
+    "Royal Enfield",
+    "VESPA",
+    "PIAGGIO",
+    "BUELL (EBR)",
+    "Norton MotorCycles",
+    "Bimota",
+    "Benelli",
+    "Beta",
+    "CFMOTO",
+    "LiveWire",
+    "ENERGICA",
+    "Moto Morini",
+    "GasGas",
+    "Slingshot",
+    "URAL"
+  ],
+  "force_drop_makes": []
+}

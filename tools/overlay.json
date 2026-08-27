@@ -1,0 +1,27 @@
+{
+  "_doc": [
+    "Overlay hook for vpic_pare_down.py (M2.3 spike). vPIC's US-federal-registration",
+    "focus means grey-import / JDM classics with no US VIN history are absent from",
+    "the derived picker tables (see README: 'Skyline' is not a model under 'Nissan').",
+    "This file is where curated additions for exactly that gap go.",
+    "",
+    "Each entry in 'entries' is merged into the derived make/model/make_model/",
+    "model_years tables AFTER the vPIC-derived data, with IDs drawn from a reserved",
+    "negative range (assigned at build time) so they can never collide with a real",
+    "vPIC id. 'vehicletype' must name one of the kept vehicle types (see script",
+    "config KEEP_VEHICLE_TYPES) -- currently: Motorcycle, Passenger Car, Truck,",
+    "Multipurpose Passenger Vehicle (MPV), Off-Road Vehicle.",
+    "",
+    "Entry shape:",
+    "  {",
+    "    \"make\": \"Nissan\",",
+    "    \"model\": \"Skyline\",",
+    "    \"year_from\": 1989,",
+    "    \"year_to\": 2002,",
+    "    \"vehicletype\": \"Passenger Car\"",
+    "  }",
+    "",
+    "This spike ships the hook wired up but empty -- 'entries' is intentionally []."
+  ],
+  "entries": []
+}
