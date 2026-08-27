@@ -129,9 +129,7 @@ def get_all_makes() -> list[dict]:
 # Tool: get_models_for_make
 # ======================================================================
 @mcp.tool()
-def get_models_for_make(
-    make: str, vehicle_type: str | None = None
-) -> list[dict]:
+def get_models_for_make(make: str, vehicle_type: str | None = None) -> list[dict]:
     """List all models for a given make.
 
     Optionally filter by vehicle type to narrow results (e.g. get only

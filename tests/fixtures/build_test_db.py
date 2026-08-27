@@ -109,13 +109,13 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
     # Note: JN1 is shared by Nissan (3) and Infiniti (4)
     # Note: 6-char WMIs use positions 1-3 + 12-14 of a VIN
     wmis = [
-        ("1HG", 1),    # Honda
+        ("1HG", 1),  # Honda
         ("WP0AA2", 2),  # Porsche (6-char, positions 1-3 + 12-14 = AA2)
         ("WP0KS1", 2),  # Porsche (6-char from test VIN WP0AA2A96KS106147)
-        ("WP0", 2),     # Porsche (3-char)
-        ("JN1", 3),    # Nissan
-        ("JN1", 4),    # Infiniti (same WMI!)
-        ("WBA", 5),    # BMW
+        ("WP0", 2),  # Porsche (3-char)
+        ("JN1", 3),  # Nissan
+        ("JN1", 4),  # Infiniti (same WMI!)
+        ("WBA", 5),  # BMW
     ]
     c.executemany("INSERT INTO wmi VALUES (?, ?)", wmis)
 
@@ -127,14 +127,14 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
     # vinschemaid 5 = Infiniti Q50 pattern
     # vinschemaid 6 = BMW 3-series pattern
     schemas = [
-        ("1HG", 1, 1998, 2025),   # Honda Accord
-        ("1HG", 2, 2000, 2025),   # Honda Civic
+        ("1HG", 1, 1998, 2025),  # Honda Accord
+        ("1HG", 2, 2000, 2025),  # Honda Civic
         ("WP0AA2", 3, 1980, 2025),  # Porsche 911 (6-char WMI)
         ("WP0KS1", 3, 1980, 2025),  # Porsche 911 (6-char from test VIN)
-        ("WP0", 3, 1980, 2025),    # Porsche 911 (3-char WMI)
-        ("JN1", 4, 1980, 2025),   # Nissan 370Z
-        ("JN1", 5, 2014, 2025),   # Infiniti Q50
-        ("WBA", 6, 1980, 2025),   # BMW 3-series
+        ("WP0", 3, 1980, 2025),  # Porsche 911 (3-char WMI)
+        ("JN1", 4, 1980, 2025),  # Nissan 370Z
+        ("JN1", 5, 2014, 2025),  # Infiniti Q50
+        ("WBA", 6, 1980, 2025),  # BMW 3-series
     ]
     c.executemany("INSERT INTO wmi_vinschema VALUES (?, ?, ?, ?)", schemas)
 
@@ -147,13 +147,13 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
     c.executemany(
         "INSERT INTO vin_pattern VALUES (?, ?, ?)",
         [
-            (1, "CM8***", 101),   # Honda Accord
-            (2, "C***00", 102),   # Honda Civic
-            (3, "A2A96*", 201),   # Porsche 911
-            (4, "AZ4EH*", 301),   # Nissan 370Z
-            (5, "AGDHC*", 401),   # Infiniti Q50
-            (6, "3A5C5*", 501),   # BMW 328i
-            (6, "WTAFM*", 502),   # BMW M3
+            (1, "CM8***", 101),  # Honda Accord
+            (2, "C***00", 102),  # Honda Civic
+            (3, "A2A96*", 201),  # Porsche 911
+            (4, "AZ4EH*", 301),  # Nissan 370Z
+            (5, "AGDHC*", 401),  # Infiniti Q50
+            (6, "3A5C5*", 501),  # BMW 328i
+            (6, "WTAFM*", 502),  # BMW M3
         ],
     )
 

@@ -203,9 +203,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
 
         make_names = self._make_id_to_name(make_ids) if make_ids else {}
 
-        model_name, vehicle_type_id, resolved_make = self._resolve_model(
-            vin, wmi, make_ids, year
-        )
+        model_name, vehicle_type_id, resolved_make = self._resolve_model(vin, wmi, make_ids, year)
 
         # Use resolved make from SQL match (handles multi-make WMI disambiguation)
         make_name = resolved_make
@@ -308,8 +306,11 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         if make_ids:
             # Build param list matching SQL placeholder order
             # SQL: ws.wmi=?, mm.makeid IN (?), year=?, vds=?
-            params = [wmi, make_ids[0], year, year, vds] if len(make_ids) == 1 \
+            params = (
+                [wmi, make_ids[0], year, year, vds]
+                if len(make_ids) == 1
                 else [wmi, *make_ids, year, year, vds]
+            )
 
             # Pattern match against all candidate makes for this WMI
             sql = f"""
@@ -356,9 +357,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
 
         # No model matched — make is still worth returning if unambiguous
         if len(make_ids) == 1:
-            row = self.conn.execute(
-                "SELECT name FROM make WHERE id = ?", (make_ids[0],)
-            ).fetchone()
+            row = self.conn.execute("SELECT name FROM make WHERE id = ?", (make_ids[0],)).fetchone()
             if row:
                 return None, None, row["name"]
 
@@ -369,9 +368,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
     # ------------------------------------------------------------------
     def get_all_makes(self, limit: int = 10_000) -> list[dict]:
         """Return all makes sorted by name."""
-        rows = self.conn.execute(
-            "SELECT id, name FROM make ORDER BY name"
-        ).fetchmany(limit)
+        rows = self.conn.execute("SELECT id, name FROM make ORDER BY name").fetchmany(limit)
         return [{"id": r["id"], "name": r["name"]} for r in rows]
 
     def get_models_for_make(
@@ -451,9 +448,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
     def get_wmi_info(self, wmi: str) -> dict | None:
         """Return WMI lookup info."""
         wmi = wmi.strip().upper()
-        row = self.conn.execute(
-            "SELECT wmi, makeid FROM wmi WHERE wmi = ?", (wmi,)
-        ).fetchone()
+        row = self.conn.execute("SELECT wmi, makeid FROM wmi WHERE wmi = ?", (wmi,)).fetchone()
         if not row:
             return None
         make_row = self.conn.execute(
@@ -467,9 +462,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
 
     def get_vehicle_types(self) -> list[dict]:
         """Return all vehicle types."""
-        rows = self.conn.execute(
-            "SELECT id, name FROM vehicletype ORDER BY name"
-        ).fetchall()
+        rows = self.conn.execute("SELECT id, name FROM vehicletype ORDER BY name").fetchall()
         return [{"id": r["id"], "name": r["name"]} for r in rows]
 
     def get_make_vehicle_types(self, make_name: str) -> list[str]:
@@ -515,9 +508,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
             # Try 6-char WMI: positions 1-3 + 12-14
             wmi = pattern[0:3] + pattern[11:14]
 
-        wmi_rows = self.conn.execute(
-            "SELECT wmi, makeid FROM wmi WHERE wmi = ?", (wmi,)
-        ).fetchall()
+        wmi_rows = self.conn.execute("SELECT wmi, makeid FROM wmi WHERE wmi = ?", (wmi,)).fetchall()
 
         if wmi_rows:
             # Handle multi-make WMIs (e.g. JN1 = Nissan + Infiniti)
@@ -572,33 +563,35 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
                 seen_models = set()
                 for r in rows:
                     if r["model"] not in seen_models and len(results) < limit:
-                        results.append({
-                            "pattern": pattern,
-                            "make": make_name,
-                            "model": r["model"],
-                            "year": year,
-                            "vehicle_type": r["vehicle_type"],
-                            "confidence": "partial_match",
-                        })
+                        results.append(
+                            {
+                                "pattern": pattern,
+                                "make": make_name,
+                                "model": r["model"],
+                                "year": year,
+                                "vehicle_type": r["vehicle_type"],
+                                "confidence": "partial_match",
+                            }
+                        )
                         seen_models.add(r["model"])
                 return results
 
         # Fallback: return WMI info only
         if make_name:
-            return [{
-                "pattern": pattern,
-                "make": make_name,
-                "model": None,
-                "year": year,
-                "vehicle_type": None,
-                "confidence": "wmi_only",
-            }]
+            return [
+                {
+                    "pattern": pattern,
+                    "make": make_name,
+                    "model": None,
+                    "year": year,
+                    "vehicle_type": None,
+                    "confidence": "wmi_only",
+                }
+            ]
 
         return []
 
     def get_make_names(self) -> list[str]:
         """Return all make names for auto-completion."""
-        rows = self.conn.execute(
-            "SELECT name FROM make ORDER BY name"
-        ).fetchall()
+        rows = self.conn.execute("SELECT name FROM make ORDER BY name").fetchall()
         return [r["name"] for r in rows]
