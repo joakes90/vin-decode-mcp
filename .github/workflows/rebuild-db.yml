@@ -16,7 +16,7 @@ env:
   PG_PORT: 5432
   PG_USER: postgres
   PG_DB: vpic_temp
-  HUGGING_FACE_REPO: "vin-decode-mcp/vpic-database"
+  HUGGING_FACE_REPO: "joakes90/vpic-database"
 
 jobs:
   rebuild:
@@ -65,51 +65,38 @@ jobs:
           }
           ls -lh tools/tmp_download/
 
-      - name: Convert to SQLite
+      - name: Build SQLite database
         run: |
           python3 tools/convert_to_sqlite.py \
             --custom tools/tmp_download/vpic.custom.zip \
-            --output tools/out/vpic_lite.db
-
-      - name: Build curated database
-        run: |
-          python3 vpic_pare_down.py \
-            --source tools/out/vpic_lite.db \
-            --output tools/out/provenance_vpic.db \
-            --overlay tools/overlay.json \
-            --curation tools/curation.json
+            --output tools/out/vPIC_sqlite.db
 
       - name: Verify database
         run: |
           python3 -c "
-          import sqlite3
-          db = 'tools/out/provenance_vpic.db'
+          import sqlite3, os
+          db = 'tools/out/vPIC_sqlite.db'
+          size = os.path.getsize(db)
+          print(f'Database size: {size:,} bytes ({size/1024/1024:.1f} MB)')
           conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
-          for table in ['make', 'model', 'make_model', 'wmi', 'vin_pattern']:
-              n = conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]
-              print(f'{table}: {n:,}')
+          tables = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()
+          for t in tables:
+              n = conn.execute(f'SELECT COUNT(*) FROM {t[0]}').fetchone()[0]
+              print(f'  {t[0]}: {n:,}')
           conn.close()
           "
 
       - name: Upload to Hugging Face
         run: |
           if [ -n "$HUGGING_FACE_TOKEN" ]; then
-            pip install huggingface_hub
-            huggingface-cli upload "${{ env.HUGGING_FACE_REPO }}" \
-              tools/out/provenance_vpic.db \
-              provenance_vpic.db
+            hf upload "${{ env.HUGGING_FACE_REPO }}" \
+              tools/out/vPIC_sqlite.db \
+              vPIC_sqlite.db
             echo "✓ Uploaded to Hugging Face"
           else
             echo "⚠ HUGGING_FACE_TOKEN not set, skipping upload"
             echo "To enable: add HUGGING_FACE_TOKEN to repository secrets"
           fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: provenance_vpic
-          path: tools/out/provenance_vpic.db
-          retention-days: 30
 
       - name: Notify on failure
         if: failure()
