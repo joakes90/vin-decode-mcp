@@ -260,7 +260,7 @@ def get_make_vehicle_types(make: str) -> list[str]:
 # ======================================================================
 # Resource: vin_mcp://schema
 # ======================================================================
-@mcp.resource("vin_mcp://schema")
+@mcp.resource("vin-mcp://schema")
 def get_schema() -> str:
     """Database schema and column descriptions.
 
@@ -303,7 +303,7 @@ def get_schema() -> str:
 # ======================================================================
 # Resource: vin_mcp://info
 # ======================================================================
-@mcp.resource("vin_mcp://info")
+@mcp.resource("vin-mcp://info")
 def get_info() -> str:
     """Dataset information and build metadata.
 

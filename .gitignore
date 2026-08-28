@@ -23,6 +23,8 @@ build/
 
 # Compiled DB (build artifacts)
 *.db
+*.db-shm
+*.db-wal
 !tests/fixtures/build_test_db.py
 
 # Environment variables
