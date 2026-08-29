@@ -27,6 +27,10 @@ build/
 *.db-wal
 !tests/fixtures/build_test_db.py
 
+# Build pipeline scratch (tools/rebuild.sh, tools/vpic_pare_down.py)
+tools/out/diff_report.txt
+tools/tmp_download/
+
 # Environment variables
 .env
 

@@ -4,7 +4,7 @@ Manages a read-only SQLite connection to the curated vPIC database.
 All queries are parameterized and safe. The connection is opened with
 file:...?mode=ro so writes are physically impossible at the OS level.
 
-Database schema (produced by tools/build_db.py):
+Database schema (produced by tools/vpic_pare_down.py):
 
     make(id, name)
     model(id, name)
@@ -28,7 +28,7 @@ from typing import Any
 _YEAR_CODES = "ABCDEFGHJKLMNPRSTVWXY123456789"
 
 # Default database path — will be overridden by CLI env var.
-_DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "provenance_vpic.db"
+_DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "curated_vpic.db"
 
 
 _db_path: Path | None = None
@@ -94,7 +94,11 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
                     f"Download it from the project releases or Hugging Face."
                 )
             uri = f"file:{self.db_path}?mode=ro"
-            self._conn = sqlite3.connect(uri, uri=True)
+            # check_same_thread=False: FastMCP dispatches tool calls on a
+            # worker pool, so the connection outlives the thread that opened
+            # it. Safe here because the database is opened read-only and
+            # Python's sqlite3 serialises access.
+            self._conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
         return self._conn
 
@@ -107,9 +111,6 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         return self
 
     def __exit__(self, *args: Any) -> None:
-        self.close()
-
-    def __del__(self) -> None:
         self.close()
 
     # ------------------------------------------------------------------
@@ -125,42 +126,6 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         return {row["key"]: row["value"] for row in cursor}
 
     # ------------------------------------------------------------------
-    # Lookup helpers
-    # ------------------------------------------------------------------
-    def _make_id_to_name(self, make_ids: list[int]) -> dict[int, str]:
-        if not make_ids:
-            return {}
-        qmarks = ",".join("?" for _ in make_ids)
-        rows = self.conn.execute(
-            f"SELECT id, name FROM make WHERE id IN ({qmarks})", make_ids
-        ).fetchall()
-        return {r["id"]: r["name"] for r in rows}
-
-    def _model_id_to_name(self, model_ids: list[int]) -> dict[int, str]:
-        if not model_ids:
-            return {}
-        qmarks = ",".join("?" for _ in model_ids)
-        rows = self.conn.execute(
-            f"SELECT id, name FROM model WHERE id IN ({qmarks})", model_ids
-        ).fetchall()
-        return {r["id"]: r["name"] for r in rows}
-
-    def _make_name_to_id(self) -> dict[str, int]:
-        rows = self.conn.execute("SELECT id, name FROM make")
-        return {r["name"].lower(): r["id"] for r in rows}
-
-    def _model_name_for(self, makeid: int, model_name: str) -> int | None:
-        """Resolve (makeid, model_name) -> modelid."""
-        row = self.conn.execute(
-            """SELECT mm.modelid
-               FROM make_model mm
-               JOIN model mo ON mo.id = mm.modelid
-               WHERE mm.makeid = ? AND LOWER(mo.name) = LOWER(?)""",
-            (makeid, model_name),
-        ).fetchone()
-        return row["modelid"] if row else None
-
-    # ------------------------------------------------------------------
     # VIN decode (reference implementation from vpic_pare_down.py)
     # ------------------------------------------------------------------
     def decode_vin(self, vin: str, model_year: int | None = None) -> dict[str, Any]:
@@ -174,7 +139,9 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         Returns:
             dict with keys: vin, make (str | None), model (str | None),
             year (int | None), vehicle_type (str | None), wmi (str | None),
-            confidence (str).
+            wmi_length (int | None), confidence (str). Every key is present on
+            every path, including the failure paths, so callers never have to
+            probe for them.
         """
         vin = vin.strip().upper()
         if len(vin) < 11:
@@ -185,6 +152,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
                 "year": None,
                 "vehicle_type": None,
                 "wmi": None,
+                "wmi_length": None,
                 "confidence": "invalid_vin",
             }
 
@@ -198,25 +166,13 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
                 "year": year,
                 "vehicle_type": None,
                 "wmi": None,
+                "wmi_length": None,
                 "confidence": "no_wmi_match",
             }
 
-        make_names = self._make_id_to_name(make_ids) if make_ids else {}
+        make_name, model_name, make_id, model_id = self._resolve_model(vin, wmi, make_ids, year)
 
-        model_name, vehicle_type_id, resolved_make = self._resolve_model(vin, wmi, make_ids, year)
-
-        # Use resolved make from SQL match (handles multi-make WMI disambiguation)
-        make_name = resolved_make
-        if make_name is None and len(make_ids) == 1:
-            make_name = make_names.get(make_ids[0])
-
-        vehicle_type = None
-        if vehicle_type_id is not None:
-            row = self.conn.execute(
-                "SELECT name FROM vehicletype WHERE id = ?", (vehicle_type_id,)
-            ).fetchone()
-            if row:
-                vehicle_type = row["name"]
+        vehicle_type = self._vehicle_type_for(make_id, model_id)
 
         if make_name and model_name:
             confidence = "full"
@@ -235,6 +191,36 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
             "wmi_length": wmi_len,
             "confidence": confidence,
         }
+
+    def _vehicle_type_for(self, make_id: int | None, model_id: int | None) -> str | None:
+        """Vehicle type for a resolved make/model pair, or None if unknown.
+
+        Kept out of the model-resolution query on purpose. `make_model` carries
+        one row per (make, model, vehicletype), and a model that vPIC types
+        more than one way (an Accord is both Passenger Car and MPV) multiplies
+        the pattern join, letting an arbitrary row win the `LIMIT 1`. Worse,
+        joining `vehicletype` there at all has to be an inner join to read the
+        name, which silently discards every pair whose type is NULL -- 291 of
+        them in the curated build, where NULL means "no pattern coverage
+        anywhere", not "no such vehicle".
+
+        Ties are broken by lowest vehicletype id, which orders vPIC's ids as
+        Motorcycle < Passenger Car < Truck < MPV < Off-Road: the more specific
+        body classes sort ahead of MPV, the catch-all that was previously
+        winning at random.
+        """
+        if make_id is None or model_id is None:
+            return None
+        row = self.conn.execute(
+            """SELECT vt.name
+               FROM make_model mm
+               JOIN vehicletype vt ON vt.id = mm.vehicletypeid
+               WHERE mm.makeid = ? AND mm.modelid = ?
+               ORDER BY vt.id
+               LIMIT 1""",
+            (make_id, model_id),
+        ).fetchone()
+        return row["name"] if row else None
 
     def _model_year_from_vin(self, vin: str) -> int | None:
         """Compute model year from VIN positions 10 and 7.
@@ -278,90 +264,62 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         wmi: str,
         make_ids: list[int],
         year: int | None,
-    ) -> tuple[str | None, int | None, str | None]:
-        """Resolve model, vehicle type, and make from VIN pattern matching.
+    ) -> tuple[str | None, str | None, int | None, int | None]:
+        """Resolve make and model together from VIN pattern matching.
 
-        The WMI alone does not identify a make — JN1 covers Nissan and Infiniti.
-        The matched model disambiguates, so make and model are resolved together.
+        Returns: (make_name, model_name, make_id, model_id)
 
-        Returns: (model_name, vehicle_type_id, make_name)
+        A WMI is not unique to a make -- JN1 covers both Nissan and Infiniti,
+        and picking the first row returned decodes a 370Z as an Infiniti. The
+        matched *model* is what disambiguates, so make and model are resolved
+        together or not at all.
 
-        vPIC's '*' in keys means exactly one character (GLOB '?'), and keys may
-        contain character classes like [EF]. We match by translating '*' to '?'
-        and doing a prefix GLOB match. Longer keys are more specific and win.
+        vPIC's '*' in `keys` means exactly one character, which is GLOB's '?',
+        not GLOB's '*'. Appending a real GLOB '*' then makes the whole thing a
+        prefix match, which is what handles keys of differing widths --
+        including character classes like 'AZ4[EF]', where the string is seven
+        characters long but matches only four VIN positions. Longer keys are
+        more specific, so the widest match wins.
         """
         vds = vin[3:17]  # Vehicle Descriptor Section
 
-        # Build IN clause for make IDs
-        if make_ids:
-            qmarks_in = ",".join("?" for _ in make_ids)
-            params: list = [wmi, vds]
-        else:
-            qmarks_in = None
-            params = [wmi, vds]
+        if not make_ids:
+            return None, None, None, None
 
-        if year is not None:
-            params.extend([year, year])
-
-        if make_ids:
-            # Build param list matching SQL placeholder order
-            # SQL: ws.wmi=?, mm.makeid IN (?), year=?, vds=?
-            params = (
-                [wmi, make_ids[0], year, year, vds]
-                if len(make_ids) == 1
-                else [wmi, *make_ids, year, year, vds]
-            )
-
-            # Pattern match against all candidate makes for this WMI
-            sql = f"""
-                SELECT mk.id AS makeid, mk.name AS make,
-                       mo.id AS modelid, mo.name AS model,
-                       vt.id AS vehicle_type_id,
-                       LENGTH(p.keys) AS width
-                FROM wmi_vinschema ws
-                JOIN vin_pattern p ON p.vinschemaid = ws.vinschemaid
-                JOIN model mo ON mo.id = p.modelid
-                JOIN make_model mm ON mm.modelid = p.modelid
-                JOIN make mk ON mk.id = mm.makeid
-                JOIN vehicletype vt ON vt.id = mm.vehicletypeid
-                WHERE ws.wmi = ?
-                  AND mm.makeid IN ({qmarks_in})
-                  AND (? IS NULL OR ? BETWEEN ws.year_from AND COALESCE(ws.year_to, 9999))
-                  AND SUBSTR(?, 1) GLOB REPLACE(p.keys, '*', '?') || '*'
-                ORDER BY width DESC
-                LIMIT 1
-            """
-        else:
-            params = [wmi, year, year, vds]
-            sql = """
-                SELECT mk.id AS makeid, mk.name AS make,
-                       mo.id AS modelid, mo.name AS model,
-                       vt.id AS vehicle_type_id,
-                       LENGTH(p.keys) AS width
-                FROM wmi_vinschema ws
-                JOIN vin_pattern p ON p.vinschemaid = ws.vinschemaid
-                JOIN model mo ON mo.id = p.modelid
-                JOIN make_model mm ON mm.modelid = p.modelid
-                JOIN make mk ON mk.id = mm.makeid
-                JOIN vehicletype vt ON vt.id = mm.vehicletypeid
-                WHERE ws.wmi = ?
-                  AND (? IS NULL OR ? BETWEEN ws.year_from AND COALESCE(ws.year_to, 9999))
-                  AND SUBSTR(?, 1) GLOB REPLACE(p.keys, '*', '?') || '*'
-                ORDER BY width DESC
-                LIMIT 1
-            """
-
-        row = self.conn.execute(sql, params).fetchone()
+        make_placeholders = ",".join("?" for _ in make_ids)
+        row = self.conn.execute(
+            f"""
+            SELECT mk.id AS makeid, mk.name AS make,
+                   mo.id AS modelid, mo.name AS model,
+                   LENGTH(p.keys) AS width
+            FROM wmi_vinschema ws
+            JOIN vin_pattern p ON p.vinschemaid = ws.vinschemaid
+            JOIN model mo ON mo.id = p.modelid
+            JOIN make_model mm ON mm.modelid = p.modelid
+            JOIN make mk ON mk.id = mm.makeid
+            WHERE ws.wmi = ?
+              AND mm.makeid IN ({make_placeholders})
+              AND (? IS NULL OR ? BETWEEN ws.year_from AND COALESCE(ws.year_to, 9999))
+              AND ? GLOB REPLACE(p.keys, '*', '?') || '*'
+            ORDER BY width DESC
+            LIMIT 1
+            """,
+            (wmi, *make_ids, year, year, vds),
+        ).fetchone()
         if row:
-            return row["model"], row["vehicle_type_id"], row["make"]
+            return row["make"], row["model"], row["makeid"], row["modelid"]
 
-        # No model matched — make is still worth returning if unambiguous
+        # No model matched. The make is still worth returning when the WMI is
+        # unambiguous -- a half-filled answer beats an empty one -- but a guess
+        # between several makes is worse than nothing.
         if len(make_ids) == 1:
-            row = self.conn.execute("SELECT name FROM make WHERE id = ?", (make_ids[0],)).fetchone()
+            row = self.conn.execute(
+                "SELECT id, name FROM make WHERE id = ?", (make_ids[0],)
+            ).fetchone()
             if row:
-                return None, None, row["name"]
+                return row["name"], None, row["id"], None
 
-        return None, None, None
+        return None, None, None, None
 
     # ------------------------------------------------------------------
     # Bulk queries
@@ -496,98 +454,80 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         if len(pattern) < 11:
             return []
 
-        # Try to match WMI first (positions 1-3, possibly 6)
-        vds_partial = pattern[3:11] if len(pattern) >= 11 else pattern[3:]
+        wmi, make_ids, _ = self._resolve_wmi(pattern)
+        if wmi is None:
+            return []
 
-        make_name = None
-        year = None
+        # Same rule decode_vin uses: VIN position 10 is the year code and
+        # position 7 selects the cycle. Reading the year off the *last*
+        # character of whatever the caller typed instead read 'A' out of
+        # "5UXWX7C5*BA" and produced 1980/2010 rather than 2011, so every
+        # candidate then failed the schema year range and the whole lookup
+        # degraded to WMI-only.
+        year = self._model_year_from_vin(pattern)
 
-        # Attempt WMI match
-        wmi = pattern[0:3]
-        if len(pattern) >= 14:
-            # Try 6-char WMI: positions 1-3 + 12-14
-            wmi = pattern[0:3] + pattern[11:14]
+        # The stored `keys` describe the VDS from position 4 onward and are
+        # prefix-matched (note the trailing GLOB '*'), so passing the rest of
+        # the partial VIN through is safe and more selective than truncating.
+        # A caller's literal '*' lines up with the '?' that REPLACE puts in
+        # the pattern, which is what makes wildcards work at all.
+        vds_partial = pattern[3:]
 
-        wmi_rows = self.conn.execute("SELECT wmi, makeid FROM wmi WHERE wmi = ?", (wmi,)).fetchall()
+        rows = self.conn.execute(
+            f"""SELECT mk.name AS make, mk.id AS makeid,
+                       mo.name AS model, mo.id AS modelid,
+                       LENGTH(p.keys) AS width
+               FROM wmi_vinschema ws
+               JOIN vin_pattern p ON p.vinschemaid = ws.vinschemaid
+               JOIN model mo ON mo.id = p.modelid
+               JOIN make_model mm ON mm.modelid = p.modelid
+               JOIN make mk ON mk.id = mm.makeid
+               WHERE ws.wmi = ?
+                 AND mm.makeid IN ({",".join("?" for _ in make_ids)})
+                 AND (? IS NULL OR ? BETWEEN ws.year_from AND COALESCE(ws.year_to, 9999))
+                 AND ? GLOB REPLACE(p.keys, '*', '?') || '*'
+               ORDER BY width DESC""",
+            (wmi, *make_ids, year, year, vds_partial),
+        ).fetchall()
 
-        if wmi_rows:
-            # Handle multi-make WMIs (e.g. JN1 = Nissan + Infiniti)
-            all_make_ids = [r["makeid"] for r in wmi_rows]
-            qmarks = ",".join("?" for _ in all_make_ids)
-            makes = self.conn.execute(
-                f"SELECT id, name FROM make WHERE id IN ({qmarks})", all_make_ids
-            ).fetchall()
-            make_name = makes[0]["name"] if makes else None
-
-            # Try to match model from partial VDS
-            if vds_partial:
-                # Check if pattern ends with a year char
-                last_char = pattern[-1] if pattern else ""
-                if last_char and last_char in _YEAR_CODES and len(pattern) >= 10:
-                    try:
-                        year_idx = _YEAR_CODES.index(last_char)
-                        if len(pattern) > 10 and pattern[-2] in _YEAR_CODES:
-                            year = 2010 + year_idx
-                        else:
-                            year = 1980 + year_idx
-                    except ValueError:
-                        pass
-
-                year_clause = "? BETWEEN ws.year_from AND COALESCE(ws.year_to, 9999)"
-                year_params = [year]
-            else:
-                year_clause = "1=1"
-                year_params = []
-
-            rows = self.conn.execute(
-                f"""SELECT mo.name AS model, vt.name AS vehicle_type,
-                          LENGTH(p.keys) AS width
-                   FROM wmi_vinschema ws
-                   JOIN vin_pattern p ON p.vinschemaid = ws.vinschemaid
-                   JOIN model mo ON mo.id = p.modelid
-                   LEFT JOIN vehicletype vt ON vt.id = (
-                       SELECT mm2.vehicletypeid FROM make_model mm2
-                       WHERE mm2.modelid = p.modelid LIMIT 1
-                   )
-                   WHERE ws.wmi = ?
-                     AND {year_clause}
-                     AND SUBSTR(?, 1) GLOB REPLACE(p.keys, '*', '?') || '*'
-                   ORDER BY width DESC
-                   LIMIT ?""",
-                [wmi, *year_params, vds_partial, limit],
-            ).fetchall()
-
-            if rows:
-                # Return top matches
-                results = []
-                seen_models = set()
-                for r in rows:
-                    if r["model"] not in seen_models and len(results) < limit:
-                        results.append(
-                            {
-                                "pattern": pattern,
-                                "make": make_name,
-                                "model": r["model"],
-                                "year": year,
-                                "vehicle_type": r["vehicle_type"],
-                                "confidence": "partial_match",
-                            }
-                        )
-                        seen_models.add(r["model"])
-                return results
-
-        # Fallback: return WMI info only
-        if make_name:
-            return [
+        results: list[dict] = []
+        seen: set[tuple[int, int]] = set()
+        for r in rows:
+            key = (r["makeid"], r["modelid"])
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(
                 {
                     "pattern": pattern,
-                    "make": make_name,
-                    "model": None,
+                    "make": r["make"],
+                    "model": r["model"],
                     "year": year,
-                    "vehicle_type": None,
-                    "confidence": "wmi_only",
+                    "vehicle_type": self._vehicle_type_for(r["makeid"], r["modelid"]),
+                    "confidence": "partial_match",
                 }
-            ]
+            )
+            if len(results) >= limit:
+                break
+        if results:
+            return results
+
+        # No model matched. Naming the make is only honest when the WMI maps
+        # to exactly one -- JN1 is both Nissan and Infiniti, and picking the
+        # first row returned would report a guess as a fact.
+        if len(make_ids) == 1:
+            row = self.conn.execute("SELECT name FROM make WHERE id = ?", (make_ids[0],)).fetchone()
+            if row:
+                return [
+                    {
+                        "pattern": pattern,
+                        "make": row["name"],
+                        "model": None,
+                        "year": year,
+                        "vehicle_type": None,
+                        "confidence": "wmi_only",
+                    }
+                ]
 
         return []
 

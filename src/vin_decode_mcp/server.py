@@ -6,10 +6,20 @@ curated NHTSA vPIC SQLite database.
 
 from __future__ import annotations
 
+import sys
+
 import structlog
 from fastmcp import FastMCP
 
 from .database import VinDatabase
+
+# Send every log line to stderr, never stdout. structlog's default
+# PrintLoggerFactory writes to stdout, which under the stdio transport *is*
+# the JSON-RPC channel -- one `logger.error(...)` from a tool's except branch
+# (a missing database is enough) lands a human-readable line in the middle of
+# the message stream and the client fails to parse it. Configured here rather
+# than in cli.py because `fastmcp run server.py` imports this module directly.
+structlog.configure(logger_factory=structlog.PrintLoggerFactory(file=sys.stderr))
 
 logger = structlog.get_logger(__name__)
 
@@ -90,10 +100,10 @@ def decode_partial_vin(pattern: str, limit: int = 20) -> list[dict]:
         List of matching decode results sorted by confidence.
 
     Examples:
-        >>> decode_partial_vin("1HGCM826*")
+        >>> decode_partial_vin("1HGCM826*3A")
         [{'make': 'Honda', 'model': 'Accord', 'year': 2003, ...}]
         >>> decode_partial_vin("5UXWX7C5*BA")
-        [{'make': 'BMW', 'model': 'X5', 'year': 2011, ...}]
+        [{'make': 'BMW', 'model': 'X3', 'year': 2011, ...}]
     """
     db = get_db()
     try:
@@ -136,7 +146,8 @@ def get_models_for_make(make: str, vehicle_type: str | None = None) -> list[dict
     car models or only motorcycle models for a make that produces both).
 
     Args:
-        make: Make name (e.g. "Honda") or numeric Make ID. Case-insensitive.
+        make: Make name (e.g. "Honda"). Case-insensitive. Use get_all_makes()
+            to list valid names; numeric make IDs are not accepted here.
         vehicle_type: Optional vehicle type filter
             ("Passenger Car", "Motorcycle", "Truck", etc.).
 
@@ -170,7 +181,7 @@ def get_model_years(make: str, model: str) -> dict | None:
         >>> get_model_years("Porsche", "911")
         {'year_from': 1981, 'year_to': None}  # still in production
         >>> get_model_years("Honda", "Accord")
-        {'year_from': 1976, 'year_to': 2025}
+        {'year_from': 1981, 'year_to': None}  # vPIC starts at 1981
     """
     db = get_db()
     try:
@@ -200,9 +211,9 @@ def get_wmi_info(wmi: str) -> dict | None:
 
     Examples:
         >>> get_wmi_info("1HG")
-        {'wmi': '1HG', 'make': 'Honda', 'makeid': 1234}
-        >>> get_wmi_info("WP0AA2")  # 6-char low-volume
-        {'wmi': 'WP0AA2', 'make': 'Porsche', 'makeid': 5678}
+        {'wmi': '1HG', 'make': 'Honda', 'makeid': 474}
+        >>> get_wmi_info("1A9841")  # 6-char low-volume
+        {'wmi': '1A9841', 'make': 'AC Propulsion', 'makeid': 771}
     """
     db = get_db()
     try:

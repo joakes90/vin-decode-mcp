@@ -12,10 +12,6 @@ on:
     - cron: "0 0 1 1,7 *"
 
 env:
-  PG_HOST: localhost
-  PG_PORT: 5432
-  PG_USER: postgres
-  PG_DB: vpic_temp
   HUGGING_FACE_REPO: "joakes90/vpic-database"
 
 jobs:
@@ -34,12 +30,15 @@ jobs:
         uses: astral-sh/setup-uv@v3
 
       - name: Install dependencies
-        run: uv pip install --system ".[build]"
+        run: uv pip install --system ".[dev,build]" huggingface_hub
 
-      - name: Install PostgreSQL (for pg_restore/pg_dump)
-        uses: syn.schedulers/postgres-actions/setup@v1
-        with:
-          postgresql-version: "17"
+      - name: Install pg_restore
+        # Only the client is needed. convert_to_sqlite.py renders the archive
+        # to plain SQL with `pg_restore --file`; no server, no database.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pg_restore --version
 
       - name: Determine vintage
         id: vintage
@@ -47,59 +46,84 @@ jobs:
           if [ -n "${{ github.event.inputs.vintage }}" ]; then
             echo "vintage=${{ github.event.inputs.vintage }}" >> "$GITHUB_OUTPUT"
           else
-            # Use scheduled date
             echo "vintage=$(date +%Y_%m)" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Download NHTSA database
         run: |
           mkdir -p tools/tmp_download
-          URL="https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_${{ steps.vintage.outputs.vintage }}.custom.zip"
-          echo "Downloading: $URL"
-          curl -f -o tools/tmp_download/vpic.custom.zip "$URL" || {
-            echo "Download failed, trying latest available..."
-            curl -f -o tools/tmp_download/vpic.custom.zip \
-              "https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_2026_08.custom.zip" || \
-            curl -f -o tools/tmp_download/vpic.custom.zip \
-              "https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_2026_07.custom.zip"
-          }
+          set -o pipefail
+          for v in "${{ steps.vintage.outputs.vintage }}" \
+                   "$(date -d '1 month ago' +%Y_%m)" \
+                   "$(date -d '2 months ago' +%Y_%m)"; do
+            [ -n "$v" ] || continue
+            URL="https://vpic.nhtsa.dot.gov/downloads/vPICList_lite_${v}.custom.zip"
+            echo "Trying: $URL"
+            if curl -fsSL -o tools/tmp_download/vpic.custom.zip "$URL"; then
+              echo "vintage=$v" >> "$GITHUB_ENV"
+              break
+            fi
+          done
+          test -s tools/tmp_download/vpic.custom.zip
           ls -lh tools/tmp_download/
 
-      - name: Build SQLite database
+      - name: Convert PostgreSQL archive to SQLite
+        # Fails the build if COPY decoding regresses and NULLs are stored as
+        # the literal string '\N' — the defect that shipped a database in
+        # which most VINs decoded to a model year and nothing else.
         run: |
           python3 tools/convert_to_sqlite.py \
             --custom tools/tmp_download/vpic.custom.zip \
-            --output tools/out/vPIC_sqlite.db
+            --output tools/out/vpic_lite.db
 
-      - name: Verify database
+      - name: Build curated database
         run: |
-          python3 -c "
-          import sqlite3, os
-          db = 'tools/out/vPIC_sqlite.db'
-          size = os.path.getsize(db)
-          print(f'Database size: {size:,} bytes ({size/1024/1024:.1f} MB)')
-          conn = sqlite3.connect(f'file:{db}?mode=ro', uri=True)
-          tables = conn.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()
-          for t in tables:
-              n = conn.execute(f'SELECT COUNT(*) FROM {t[0]}').fetchone()[0]
-              print(f'  {t[0]}: {n:,}')
-          conn.close()
-          "
+          python3 tools/vpic_pare_down.py \
+            --source tools/out/vpic_lite.db \
+            --output tools/out/curated_vpic.db \
+            --overlay tools/overlay.json \
+            --curation tools/curation.json
+
+      - name: Verify curated database
+        # The curated file is what the MCP server downloads, so it is what
+        # must be checked. Referential integrity across the ID spaces is the
+        # invariant the previous build broke.
+        run: |
+          cp tools/out/curated_vpic.db curated_vpic.db
+          python3 - <<'PY'
+          import sqlite3
+          c = sqlite3.connect("file:curated_vpic.db?mode=ro", uri=True)
+          q = lambda s: c.execute(s).fetchone()[0]
+          for table in ("make", "model", "make_model", "model_years",
+                        "wmi", "wmi_vinschema", "vin_pattern"):
+              print(f"  {table}: {q(f'SELECT COUNT(*) FROM {table}'):,}")
+          assert q("SELECT COUNT(*) FROM vin_pattern p LEFT JOIN model m "
+                   "ON m.id = p.modelid WHERE m.id IS NULL") == 0, \
+              "vin_pattern.modelid does not resolve against model.id"
+          assert q("SELECT COUNT(*) FROM wmi") > 1000, "wmi table is too small"
+          assert 400 < q("SELECT COUNT(*) FROM make") < 800, "make curation looks wrong"
+          PY
+          python3 -m pytest tests/ -q
 
       - name: Upload to Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HUGGING_FACE_TOKEN }}
         run: |
-          if [ -n "$HUGGING_FACE_TOKEN" ]; then
-            hf upload "${{ env.HUGGING_FACE_REPO }}" \
-              tools/out/vPIC_sqlite.db \
-              vPIC_sqlite.db
-            echo "✓ Uploaded to Hugging Face"
-          else
-            echo "⚠ HUGGING_FACE_TOKEN not set, skipping upload"
-            echo "To enable: add HUGGING_FACE_TOKEN to repository secrets"
+          if [ -z "${HF_TOKEN}" ]; then
+            echo "::warning::HUGGING_FACE_TOKEN not set; skipping upload"
+            exit 0
           fi
+          hf upload "${HUGGING_FACE_REPO}" \
+            tools/out/curated_vpic.db \
+            curated_vpic.db \
+            --repo-type dataset \
+            --commit-message "Rebuild from NHTSA vintage ${vintage}"
+          echo "Uploaded curated_vpic.db to ${HUGGING_FACE_REPO}"
 
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "Database rebuild failed for vintage ${{ steps.vintage.outputs.vintage }}"
-          # Add Slack/email notification here if needed
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: curated_vpic.db
+          path: tools/out/curated_vpic.db
+          if-no-files-found: warn

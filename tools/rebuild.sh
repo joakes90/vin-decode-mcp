@@ -189,9 +189,14 @@ echo "  ✓ SQLite database: ${LITE_DB}"
 echo ""
 echo "Step 5: Running curated pare-down pipeline..."
 
-python3 "${PROJECT_DIR}/vpic_pare_down.py" \
+# --output MUST NOT be the source: vpic_pare_down.py unlinks the output path
+# before writing, so pointing both at LITE_DB deletes the converted source
+# and the build then fails with nothing to read.
+CURATED_DB="${PROJECT_DIR}/tools/out/curated_vpic.db"
+
+python3 "${SCRIPT_DIR}/vpic_pare_down.py" \
     --source "${LITE_DB}" \
-    --output "${LITE_DB}" \
+    --output "${CURATED_DB}" \
     --overlay "${SCRIPT_DIR}/overlay.json" \
     --curation "${SCRIPT_DIR}/curation.json"
 
@@ -200,11 +205,11 @@ echo "=============================================="
 echo "Pipeline complete!"
 echo "=============================================="
 echo ""
-echo "Database: ${LITE_DB}"
-echo "Output:   $(ls -lh ${PROJECT_DIR}/tools/out/provenance_vpic.db 2>/dev/null | awk '{print $5}')"
+echo "Source (full vPIC):  ${LITE_DB}"
+echo "Curated (shipped):   ${CURATED_DB} ($(ls -lh "${CURATED_DB}" 2>/dev/null | awk '{print $5}'))"
 echo ""
 echo "To use with the MCP server:"
-echo "  export VIN_MCP_DB_PATH=${LITE_DB}"
+echo "  export VIN_MCP_DB_PATH=${CURATED_DB}"
 echo "  vin-decode-mcp"
 echo ""
 echo "To clean up the temp database:"

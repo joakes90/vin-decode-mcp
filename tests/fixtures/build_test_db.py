@@ -66,6 +66,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         (2, "Passenger Car"),
         (1, "Motorcycle"),
         (3, "Truck"),
+        (7, "Multipurpose Passenger Vehicle (MPV)"),
     ]
     c.executemany("INSERT INTO vehicletype VALUES (?, ?)", vtypes)
 
@@ -78,6 +79,11 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         (401, "Q50"),
         (501, "328i"),
         (502, "M3"),
+        # A model vPIC has patterns for but never assigns a vehicle type to.
+        # The curated build carries 291 of these (vehicletypeid NULL means
+        # "no pattern coverage anywhere", not "not a vehicle"), and they must
+        # still decode.
+        (503, "Untyped Coupe"),
     ]
     c.executemany("INSERT INTO model VALUES (?, ?)", models)
 
@@ -90,6 +96,11 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
         (4, 401, 2),  # Infiniti Q50 → Passenger Car
         (5, 501, 2),  # BMW 328i → Passenger Car
         (5, 502, 2),  # BMW M3 → Passenger Car
+        (5, 503, None),  # BMW Untyped Coupe → vehicle type unknown
+        # Accord is typed twice, as vPIC really does type it. The decoder must
+        # pick deterministically (lowest vehicletype id) rather than let an
+        # arbitrary join row win.
+        (1, 101, 7),  # Honda Accord → MPV, as well as Passenger Car above
     ]
     c.executemany("INSERT INTO make_model VALUES (?, ?, ?)", mm)
 
@@ -154,6 +165,7 @@ CREATE TABLE dataset_info (key TEXT PRIMARY KEY, value TEXT);
             (5, "AGDHC*", 401),  # Infiniti Q50
             (6, "3A5C5*", 501),  # BMW 328i
             (6, "WTAFM*", 502),  # BMW M3
+            (6, "9U9U9*", 503),  # BMW Untyped Coupe (vehicletypeid NULL)
         ],
     )
 

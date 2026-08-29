@@ -13,7 +13,7 @@ carry prose docs -- see README).
 Usage:
     python3 tools/vpic_pare_down.py \
         --source /Users/justin/Devel/db/sqlite_conversion/vpic_lite.db \
-        --output tools/out/provenance_vpic.db
+        --output tools/out/curated_vpic.db
 
 Idempotent: re-running against the same source produces the same output
 (modulo the build_timestamp stamp and diff_report.txt, which record the run).
@@ -90,7 +90,7 @@ WMI_LONG_LENGTH = 6
 
 DEFAULT_SOURCE = Path("/Users/justin/Devel/db/sqlite_conversion/vpic_lite.db")
 TOOLS_DIR = Path(__file__).resolve().parent
-DEFAULT_OUTPUT = TOOLS_DIR / "out" / "provenance_vpic.db"
+DEFAULT_OUTPUT = TOOLS_DIR / "out" / "curated_vpic.db"
 DEFAULT_OVERLAY = TOOLS_DIR / "overlay.json"
 DEFAULT_CURATION = TOOLS_DIR / "curation.json"
 

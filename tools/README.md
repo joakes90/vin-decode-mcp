@@ -30,7 +30,7 @@ This will:
 2. Restore to a local PostgreSQL instance
 3. Convert to SQLite format
 4. Run the curated pare-down pipeline
-5. Output: `tools/out/vpic_decode.db` (~4.5 MB)
+5. Output: `tools/out/curated_vpic.db` (~4.5 MB)
 
 ## Manual Build
 
@@ -47,7 +47,7 @@ python3 tools/convert_to_sqlite.py \
 # Step 3: Build curated database
 python3 tools/build_db.py \
     --source tools/out/vpic_lite.db \
-    --output tools/out/vpic_decode.db
+    --output tools/out/curated_vpic.db
 ```
 
 ## Curation

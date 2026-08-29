@@ -20,7 +20,7 @@ vin-decode-mcp  # Start the MCP server
 ## Data Coverage
 
 - US-market vehicles, model year **1981 and forward**
-- **534 makes**, **9,175 models**, **88,140 VIN patterns**
+- **536 makes**, **9,284 models**, **88,267 VIN patterns** (2026-08 vintage)
 - Passenger Cars, Trucks, MPVs, Motorcycles, Off-Road Vehicles
 - Excludes: Buses, Trailers, Low-Speed Vehicles, Incomplete Vehicles
 
@@ -100,7 +100,8 @@ Restart Claude Desktop. The model can now use VIN decoding tools in conversation
 {"year_from": 1981, "year_to": null}
 
 >>> decode_partial_vin("5UXWX7C5*BA")
-[{"make": "BMW", "model": "X5", "year": 2011, "confidence": "partial_match"}]
+[{"make": "BMW", "model": "X3", "year": 2011,
+  "vehicle_type": "Passenger Car", "confidence": "partial_match"}]
 ```
 
 ## Database
@@ -109,18 +110,18 @@ Restart Claude Desktop. The model can now use VIN decoding tools in conversation
 
 The compiled database is hosted on Hugging Face:
 
-**Dataset**: https://huggingface.co/datasets/vin-decode-mcp/vpic-database
-**Direct download**: https://huggingface.co/datasets/vin-decode-mcp/vpic-database/resolve/main/vpic_decode.db
+**Dataset**: https://huggingface.co/datasets/joakes90/vpic-database
+**Direct download**: https://huggingface.co/datasets/joakes90/vpic-database/resolve/main/curated_vpic.db
 
 ### Custom Database Path
 
 ```bash
 # Set via environment variable
-export VIN_MCP_DB_PATH=/path/to/vpic_decode.db
+export VIN_MCP_DB_PATH=/path/to/curated_vpic.db
 vin-decode-mcp
 
 # Or via CLI flag
-vin-decode-mcp --db-path /path/to/vpic_decode.db
+vin-decode-mcp --db-path /path/to/curated_vpic.db
 ```
 
 ### Rebuilding
@@ -134,9 +135,9 @@ bash tools/rebuild.sh
 # Or step by step:
 # 1. Download NHTSA data: https://vpic.nhtsa.dot.gov/Downloads/
 # 2. Convert to SQLite
-python3 tools/convert_to_sqlite.py --input dump.sql --output vpic_lite.db
+python3 tools/convert_to_sqlite.py --input dump.sql --output tools/out/vpic_lite.db
 # 3. Build curated database
-python3 tools/build_db.py --source vpic_lite.db --output vpic_decode.db
+python3 tools/build_db.py --source tools/out/vpic_lite.db --output tools/out/curated_vpic.db
 ```
 
 See [`docs/hf-setup.md`](docs/hf-setup.md) for Hugging Face setup instructions.
@@ -160,14 +161,14 @@ User / LLM Agent
        ▼  MCP (stdio / HTTP)
 ┌──────────────────┐
 │  vin-decode-mcp  │  pip install vin-decode-mcp
-│  (FastMCP server)│  env: VIN_MCP_DB_PATH=/path/to/vpic_decode.db
+│  (FastMCP server)│  env: VIN_MCP_DB_PATH=/path/to/curated_vpic.db
 └────────┬─────────┘
          │  sqlite3 (mode=ro)
          ▼
-┌──────────────────┐
-│ vpic_decode.db     │  ~4.5 MB, curated
-│  (Hugging Face)  │  makes + models + WMI + VIN patterns
-└──────────────────┘
+┌──────────────────────┐
+│  curated_vpic.db     │  ~4.5 MB, curated
+│    (Hugging Face)    │  makes + models + WMI + VIN patterns
+└──────────────────────┘
          ▲
          │  rebuilds from
 ┌──────────────────┐
@@ -187,16 +188,18 @@ vin-decode-mcp/
 │   └── cli.py                   # CLI entry point
 ├── tools/
 │   ├── build_db.py              # Pipeline orchestrator
-│   ├── convert_to_sqlite.py     # PG → SQLite converter
+│   ├── convert_to_sqlite.py     # PG → SQLite converter (COPY text format)
+│   ├── vpic_pare_down.py        # Curated pare-down + VIN decode tables
 │   ├── rebuild.sh               # Full rebuild script
-│   ├── build_db.py              # Curated DB builder (orchestrator for the pipeline)
 │   ├── curation.json            # Make/model curation rules
 │   ├── overlay.json             # Grey-import classic additions
 │   └── README.md                # Rebuild instructions
 ├── tests/
 │   ├── conftest.py              # Test fixtures
-│   ├── test_decode.py           # VIN decode canary tests
+│   ├── test_decode.py           # VIN decode canary + regression tests
 │   ├── test_server.py           # Bulk lookup tests
+│   ├── test_convert.py          # PostgreSQL COPY decoding tests
+│   ├── test_real_db.py          # Smoke tests against the curated DB
 │   └── fixtures/
 │       ├── build_test_db.py     # Test database builder
 │       └── test_vpic.db         # Minimal test database
@@ -207,8 +210,7 @@ vin-decode-mcp/
 │   └── hf-setup.md              # Hugging Face setup guide
 ├── pyproject.toml
 ├── LICENSE
-├── README.md
-└── vpic_pare_down.py            # Pare-down pipeline (original)
+└── README.md
 ```
 
 ## Development
@@ -236,7 +238,7 @@ python -m ruff format src/ tests/
 | **Rate limited** | No | Yes | Yes |
 | **Data size** | ~4.5 MB | N/A | N/A |
 | **VIN fields** | Make + Model + Year | ~130 fields | ~130 fields |
-| **Makes/Models** | ✅ 534/9,175 | ✅ Full catalog | ✅ Full catalog |
+| **Makes/Models** | ✅ 536/9,284 | ✅ Full catalog | ✅ Full catalog |
 | **Install** | `pip install` | None | `pip install` |
 
 ## License

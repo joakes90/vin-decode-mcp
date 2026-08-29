@@ -87,7 +87,7 @@ Excluded: Buses, Trailers, Low-Speed Vehicles, Incomplete Vehicles.
 Download the `.db` file and use with the MCP server:
 
 ```bash
-export VIN_MCP_DB_PATH=/path/to/provenance_vpic.db
+export VIN_MCP_DB_PATH=/path/to/curated_vpic.db
 vin-decode-mcp
 ```
 
@@ -95,7 +95,7 @@ Or query directly:
 
 ```python
 import sqlite3
-conn = sqlite3.connect("provenance_vpic.db", uri=True)
+conn = sqlite3.connect("curated_vpic.db", uri=True)
 conn.row_factory = sqlite3.Row
 
 # List makes
@@ -118,14 +118,14 @@ Curated database pipeline: [vin-decode-mcp](https://github.com/vin-decode-mcp)
 
 ```bash
 # From the main repo after building
-hf upload joakes90/vpic-database tools/out/vPIC_sqlite.db vPIC_sqlite.db
+hf upload joakes90/vpic-database tools/out/curated_vpic.db curated_vpic.db --repo-type dataset
 
 # Or with huggingface_hub Python API
 from huggingface_hub import HfApi
 api = HfApi()
 api.upload_file(
-    path_or_fileobj="tools/out/vPIC_sqlite.db",
-    path_in_repo="vPIC_sqlite.db",
+    path_or_fileobj="tools/out/curated_vpic.db",
+    path_in_repo="curated_vpic.db",
     repo_id="joakes90/vpic-database",
 )
 ```
@@ -141,7 +141,7 @@ The compiled database is hosted on Hugging Face:
 https://huggingface.co/datasets/joakes90/vpic-database
 
 Download directly:
-https://huggingface.co/datasets/joakes90/vpic-database/resolve/main/vPIC_sqlite.db
+https://huggingface.co/datasets/joakes90/vpic-database/resolve/main/curated_vpic.db
 ```
 
 ## 5. GitHub Actions
@@ -169,7 +169,7 @@ If you prefer to host on GitHub instead of Hugging Face:
 # Manual release
 git tag v0.1.0
 git push origin v0.1.0
-gh release create v0.1.0 tools/out/vPIC_sqlite.db \
+gh release create v0.1.0 tools/out/curated_vpic.db \
   --title "v0.1.0 - VIN decode database" \
   --notes "Database built from NHTSA vPIC 2026-08"
 ```

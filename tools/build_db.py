@@ -37,9 +37,9 @@ from pathlib import Path
 # ── Paths ──────────────────────────────────────────────────────────────
 TOOLS_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = TOOLS_DIR.parent
-VPIC_SCRIPT = PROJECT_DIR / "vpic_pare_down.py"
+VPIC_SCRIPT = TOOLS_DIR / "vpic_pare_down.py"
 DEFAULT_SOURCE = PROJECT_DIR / "tools" / "out" / "vpic_lite.db"
-DEFAULT_OUTPUT = PROJECT_DIR / "tools" / "out" / "provenance_vpic.db"
+DEFAULT_OUTPUT = PROJECT_DIR / "tools" / "out" / "curated_vpic.db"
 DEFAULT_OVERLAY = TOOLS_DIR / "overlay.json"
 DEFAULT_CURATION = TOOLS_DIR / "curation.json"
 CONVERTER = TOOLS_DIR / "convert_to_sqlite.py"

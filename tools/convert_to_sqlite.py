@@ -18,15 +18,102 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import os
 import re
 import sqlite3
 import subprocess
+import zipfile
 from pathlib import Path
 
 COPY_END_MARKER = "\\."  # PostgreSQL COPY terminator in plain SQL dumps
+
+# PostgreSQL COPY *text* format (the default) is not CSV: fields are tab
+# separated, never quoted, and backslash-escaped. Parsing it with csv.reader
+# silently corrupts the data in two ways -- a field containing a double quote
+# gets swallowed by CSV quote handling, and the NULL marker \N arrives as the
+# literal two-character string instead of NULL.
+#
+# The \N bug is not cosmetic. In the 2026-08 vintage it left 1,799,178 cells
+# across 51 columns holding '\N', including every NULL in wmi_vinschema.yearto,
+# which makes year ranges compare str against int downstream. Anything reading
+# this database then has to defend itself with `NOT LIKE '\N'` filters, which
+# is how the curated build ended up dropping most of its WMIs.
+#
+# See PostgreSQL docs, COPY: "Text Format".
+_COPY_ESCAPES = {
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+}
+
+NULL_MARKER = "\\N"
+
+
+def decode_copy_field(field: str) -> str | None:
+    r"""Decode one PostgreSQL COPY text-format field.
+
+    `\N` (and only an unescaped `\N` occupying the whole field) is NULL. A
+    literal backslash-N in the data is dumped as `\\N` and decodes to the
+    two-character string, so the two are never ambiguous.
+    """
+    if field == NULL_MARKER:
+        return None
+    if "\\" not in field:
+        return field
+
+    out: list[str] = []
+    i = 0
+    n = len(field)
+    while i < n:
+        ch = field[i]
+        if ch != "\\" or i + 1 >= n:
+            out.append(ch)
+            i += 1
+            continue
+        nxt = field[i + 1]
+        if nxt in _COPY_ESCAPES:
+            out.append(_COPY_ESCAPES[nxt])
+            i += 2
+        elif nxt == "x":
+            # \xNN hex escape (1-2 hex digits)
+            hex_digits = ""
+            j = i + 2
+            while j < n and len(hex_digits) < 2 and field[j] in "0123456789abcdefABCDEF":
+                hex_digits += field[j]
+                j += 1
+            if hex_digits:
+                out.append(chr(int(hex_digits, 16)))
+                i = j
+            else:
+                out.append(nxt)
+                i += 2
+        elif nxt in "01234567":
+            # \NNN octal escape (1-3 octal digits)
+            oct_digits = ""
+            j = i + 1
+            while j < n and len(oct_digits) < 3 and field[j] in "01234567":
+                oct_digits += field[j]
+                j += 1
+            out.append(chr(int(oct_digits, 8)))
+            i = j
+        else:
+            # Unknown escape: PostgreSQL emits the character itself.
+            out.append(nxt)
+            i += 2
+    return "".join(out)
+
+
+def parse_copy_row(line: str) -> list[str | None]:
+    """Split one COPY text-format line into decoded fields.
+
+    Tab is the delimiter and is never escaped inside a field (an embedded tab
+    is dumped as `\\t`), so a plain split is correct and unambiguous.
+    """
+    return [decode_copy_field(f) for f in line.split("\t")]
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,7 +188,10 @@ def convert_from_sql(sql_path: Path, output_path: Path) -> None:
                 current_columns = None
                 current_data = []
             else:
-                current_data.append(stripped)
+                # Deliberately the raw line, not `stripped`: leading and
+                # trailing whitespace is data inside a COPY block, and an
+                # all-whitespace field is not the same as an empty one.
+                current_data.append(line)
 
     # Don't forget the last COPY block
     if in_copy and current_table:
@@ -204,12 +294,20 @@ def convert_from_sql(sql_path: Path, output_path: Path) -> None:
         if not block["columns"]:
             continue
 
-        # Parse COPY data (PostgreSQL uses TAB as default delimiter)
-        reader = csv.reader(io.StringIO(block["data"]), delimiter="\t")
+        # PostgreSQL COPY text format — tab separated, backslash escaped,
+        # `\N` for NULL. Not CSV; see decode_copy_field above.
+        n_cols = len(block["columns"])
         rows = []
-        for row in reader:
-            if row and row[0] != COPY_END_MARKER:
-                rows.append(row)
+        for line in block["data"].split("\n"):
+            if not line or line.strip() == COPY_END_MARKER:
+                continue
+            row = parse_copy_row(line)
+            if len(row) != n_cols:
+                raise ValueError(
+                    f"{table_name}: COPY row has {len(row)} fields, expected "
+                    f"{n_cols} ({block['columns']}). Line: {line[:120]!r}"
+                )
+            rows.append(row)
 
         if not rows:
             continue
@@ -218,13 +316,19 @@ def convert_from_sql(sql_path: Path, output_path: Path) -> None:
         placeholders = ", ".join("?" for _ in block["columns"])
         insert_sql = f"INSERT INTO {table_name} ({columns_str}) VALUES ({placeholders})"
 
+        # A table that fails to load is a corrupt build, not a warning. The
+        # previous code printed and carried on, which is how a database with
+        # missing tables reached Hugging Face.
         try:
             conn.executemany(insert_sql, rows)
-            loaded_rows += len(rows)
-            if len(rows) > 1000:
-                conn.commit()
         except sqlite3.Error as e:
-            print(f"  ⚠ Error loading {table_name}: {e} ({len(rows)} rows)")
+            conn.close()
+            raise RuntimeError(
+                f"Failed to load {len(rows):,} rows into {table_name}: {e}"
+            ) from e
+        loaded_rows += len(rows)
+        if len(rows) > 1000:
+            conn.commit()
 
     conn.commit()
 
@@ -258,10 +362,42 @@ def convert_from_sql(sql_path: Path, output_path: Path) -> None:
     print(f"  ✓ Created {indexes_created} indexes")
 
     conn.commit()
+
+    verify_no_null_markers(conn)
+
     conn.close()
 
     print(f"  ✓ Loaded {loaded_rows:,} rows total")
     print(f"  ✓ Output: {output_path} ({output_path.stat().st_size / 1_048_576:.1f} MB)")
+
+
+def verify_no_null_markers(conn: sqlite3.Connection) -> None:
+    r"""Fail the build if any cell holds the literal string `\N`.
+
+    A surviving `\N` means COPY decoding regressed and NULLs are being stored
+    as text. Downstream that silently collapses joins -- it is what reduced the
+    curated `wmi` table from ~1,700 rows to 173 -- so it must stop the build
+    here rather than surface as a VIN that decodes to a year and nothing else.
+    """
+    offenders = []
+    tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+    for table in tables:
+        for col in [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]:
+            n = conn.execute(
+                f'SELECT COUNT(*) FROM "{table}" WHERE "{col}" = ?', (NULL_MARKER,)
+            ).fetchone()[0]
+            if n:
+                offenders.append((table, col, n))
+
+    if offenders:
+        detail = ", ".join(f"{t}.{c} ({n:,})" for t, c, n in offenders[:8])
+        more = "" if len(offenders) <= 8 else f" and {len(offenders) - 8} more columns"
+        conn.close()
+        raise RuntimeError(
+            rf"COPY decoding failed: literal '\N' stored instead of NULL in {detail}{more}. "
+            r"NULLs must be decoded (see decode_copy_field)."
+        )
+    print(rf"  ✓ Verified: no literal '\N' NULL markers in {len(tables)} tables")
 
 
 def strip_pg_meta_commands(text: str) -> str:
@@ -436,31 +572,55 @@ def convert_pg_to_sqlite_schema(schema_text: str) -> str:
 def convert_from_custom(custom_path: Path, output_path: Path) -> None:
     """Convert a PostgreSQL .custom backup to SQLite.
 
-    Uses pg_restore to dump to SQL, then converts the SQL dump.
+    Uses pg_restore to render the archive as plain SQL, then converts it.
+    Only `pg_restore` is needed -- no PostgreSQL server, no database. NHTSA
+    distributes the archive zipped, so a .zip is unpacked first; pg_restore
+    cannot read a zip container.
     """
     import tempfile
 
     print(f"Converting custom backup: {custom_path} -> {output_path}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # pg_restore --file extracts SQL to stdout or a file
-        sql_file = Path(tmpdir) / "dump.sql"
+        tmp = Path(tmpdir)
+        archive = custom_path
+
+        if zipfile.is_zipfile(custom_path):
+            with zipfile.ZipFile(custom_path) as zf:
+                members = [n for n in zf.namelist() if not n.endswith("/")]
+                if not members:
+                    raise RuntimeError(f"{custom_path} is an empty zip archive")
+                # NHTSA ships a single .custom member.
+                member = next(
+                    (m for m in members if m.lower().endswith(".custom")), members[0]
+                )
+                print(f"  Unpacking {member} from {custom_path.name}")
+                archive = Path(zf.extract(member, path=tmp))
+
+        sql_file = tmp / "dump.sql"
         result = subprocess.run(
-            ["pg_restore", "--no-owner", "--no-privileges", "--clean", "--if-exists",
-             "--create", "--file", str(sql_file), str(custom_path)],
+            [
+                "pg_restore",
+                "--no-owner",
+                "--no-privileges",
+                "--file",
+                str(sql_file),
+                str(archive),
+            ],
             capture_output=True,
             text=True,
         )
 
         if result.returncode != 0:
-            print(f"  ✗ pg_restore failed: {result.stderr[:200]}")
-            print("  Please ensure PostgreSQL is installed and running.")
-            return
+            raise RuntimeError(
+                f"pg_restore failed ({result.returncode}): {result.stderr[:500]}\n"
+                "Install PostgreSQL client tools (no server needed): "
+                "`brew install libpq` or `apt-get install postgresql-client`."
+            )
+        if not sql_file.exists():
+            raise RuntimeError("pg_restore reported success but produced no SQL dump")
 
-        if sql_file.exists():
-            convert_from_sql(sql_file, output_path)
-        else:
-            print("  ✗ Could not generate SQL dump from custom backup")
+        convert_from_sql(sql_file, output_path)
 
 
 def main() -> None:
@@ -479,7 +639,7 @@ def main() -> None:
         convert_from_custom(args.custom, args.output)
 
     elif args.pg_db:
-        # Live connection: dump to SQL then convert
+        # Live connection: dump to SQL then convert.
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -490,7 +650,11 @@ def main() -> None:
                     "--no-owner",
                     "--no-privileges",
                     "--schema=vpic",
-                    "--data-only",
+                    # Schema included on purpose: the converter builds its
+                    # tables from the CREATE TABLE statements, so a
+                    # --data-only dump yields a database with no tables.
+                    "--file",
+                    str(sql_file),
                     "-h", args.pg_host,
                     "-p", str(args.pg_port),
                     "-U", args.pg_user,
@@ -499,10 +663,13 @@ def main() -> None:
                 capture_output=True,
                 text=True,
             )
-            if result.returncode == 0 and sql_file.exists():
-                convert_from_sql(sql_file, args.output)
-            else:
-                print(f"✗ pg_dump failed: {result.stderr[:200]}")
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"pg_dump failed ({result.returncode}): {result.stderr[:500]}"
+                )
+            if not sql_file.exists():
+                raise RuntimeError("pg_dump reported success but produced no SQL dump")
+            convert_from_sql(sql_file, args.output)
 
 
 if __name__ == "__main__":

@@ -121,3 +121,21 @@ class TestSchemaAndInfo:
         info = db.get_dataset_info()
         assert "source_file" in info
         assert "source_vintage" in info
+
+
+class TestLoggingNeverTouchesStdout:
+    """Under the stdio transport, stdout *is* the JSON-RPC channel.
+
+    structlog's default PrintLoggerFactory writes to stdout, so an unguarded
+    `logger.error(...)` in a tool's except branch corrupts the message stream
+    and the client fails to parse it.
+    """
+
+    def test_error_path_writes_nothing_to_stdout(self, capsys, monkeypatch, tmp_path):
+        from vin_decode_mcp import server
+
+        monkeypatch.setattr(server, "get_db", lambda: VinDatabase(tmp_path / "missing.db"))
+        result = server.decode_vin("1HGCM82633A004352")
+
+        assert "error" in result
+        assert capsys.readouterr().out == ""
