@@ -55,7 +55,7 @@ vin-decode-mcp --transport http --port 8765
 
 ### Using with Claude Desktop
 
-Add to `~/.config/claude-desktop/config.json` (or `~/Library/Application Support/claude-desktop/config.json` on macOS):
+Add to `~/.config/claude-desktop/config.json` (or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 ```json
 {
