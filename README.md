@@ -55,19 +55,30 @@ vin-decode-mcp --transport http --port 8765
 
 ### Using with Claude Desktop
 
-Add to `~/.config/claude-desktop/config.json` (or `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+Create a dedicated venv so the binary lands where you can reference it:
+
+```bash
+python3 -m venv ~/.local/venvs/vin-decode
+source ~/.local/venvs/vin-decode/bin/activate
+pip install vin-decode-mcp
+deactivate
+```
+
+Add to `~/.config/claude-desktop/config.json` (or `~/Library/Application Support/claude-desktop/config.json` on macOS):
 
 ```json
 {
   "mcpServers": {
     "vin-decode": {
-      "command": "vin-decode-mcp"
+      "command": "~/.local/venvs/vin-decode/bin/vin-decode-mcp"
     }
   }
 }
 ```
 
-Restart Claude Desktop. The model can now use VIN decoding tools in conversations.
+Replace the path with wherever you put the venv. Restart Claude Desktop. The model can now use VIN decoding tools in conversations.
+
+> **Note:** Claude Desktop spawns processes with a minimal `$PATH` that doesn't include conda environments or virtualenvs, so always use the **absolute path** to the binary — just putting `"vin-decode-mcp"` won't work.
 
 ## Available Tools
 
