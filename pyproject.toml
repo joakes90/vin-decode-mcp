@@ -9,7 +9,7 @@ description = "MCP server for decoding VINs and querying vehicle data from a cur
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    {name = "VIN Decode MCP Contributors"},
+    {name = "Justin Oakes"},
 ]
 license = "MIT"
 keywords = ["vin", "vpic", "nhtsa", "vehicle", "mcp", "fastmcp", "sqlite"]
@@ -43,10 +43,10 @@ build = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/<org>/vin-decode-mcp"
-Repository = "https://github.com/<org>/vin-decode-mcp"
-"Bug Tracker" = "https://github.com/<org>/vin-decode-mcp/issues"
-Documentation = "https://github.com/<org>/vin-decode-mcp#readme"
+Homepage = "https://github.com/joakes90/vin-decode-mcp"
+Repository = "https://github.com/joakes90/vin-decode-mcp"
+"Bug Tracker" = "https://github.com/joakes90/vin-decode-mcp/issues"
+Documentation = "https://github.com/joakes90/vin-decode-mcp#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vin_decode_mcp"]
